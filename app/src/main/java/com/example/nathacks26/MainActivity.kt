@@ -14,6 +14,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -28,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -41,6 +44,11 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.nathacks26.ui.theme.NatHacks26Theme
+import com.google.mediapipe.framework.image.BitmapImageBuilder
+import com.google.mediapipe.tasks.core.BaseOptions
+import com.google.mediapipe.tasks.vision.core.RunningMode
+import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
+import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -88,7 +96,7 @@ fun CardboardVrScreen() {
     } else {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Button(onClick = { launcher.launch(Manifest.permission.CAMERA) }) {
-                Text(text = "Grant Camera Permission for Cardboard VR Passthrough")
+                Text(text = "Grant Camera Permission for CardboardXR Hand Tracking")
             }
         }
     }
@@ -100,9 +108,28 @@ fun CardboardDualEyeVrLayout() {
     val lifecycleOwner = LocalLifecycleOwner.current
 
     var cameraBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var handLandmarkerResult by remember { mutableStateOf<HandLandmarkerResult?>(null) }
     var ipdOffsetDp by remember { mutableFloatStateOf(24f) }
+    var handStatusText by remember { mutableStateOf("CardboardXR: Scanning for hands...") }
 
-    // Reusable Matrix and Matrix allocation optimization
+    // Initialize MediaPipe HandLandmarker using bundled hand_landmarker.task model asset
+    val handLandmarker = remember {
+        try {
+            val baseOptions = BaseOptions.builder()
+                .setModelAssetPath("hand_landmarker.task")
+                .build()
+            val options = HandLandmarker.HandLandmarkerOptions.builder()
+                .setBaseOptions(baseOptions)
+                .setRunningMode(RunningMode.IMAGE)
+                .setNumHands(2)
+                .build()
+            HandLandmarker.createFromOptions(context, options)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
     DisposableEffect(lifecycleOwner) {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
         val executor = ContextCompat.getMainExecutor(context)
@@ -119,13 +146,30 @@ fun CardboardDualEyeVrLayout() {
                 val rotation = imageProxy.imageInfo.rotationDegrees
                 val bitmap = imageProxy.toBitmap()
 
-                cameraBitmap = if (rotation != 0) {
+                val rotatedBitmap = if (rotation != 0) {
                     matrix.reset()
                     matrix.postRotate(rotation.toFloat())
                     Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
                 } else {
                     bitmap
                 }
+
+                cameraBitmap = rotatedBitmap
+
+                if (handLandmarker != null) {
+                    try {
+                        val mpImage = BitmapImageBuilder(rotatedBitmap).build()
+                        val result = handLandmarker.detect(mpImage)
+                        handLandmarkerResult = result
+                        val count = result.landmarks().size
+                        handStatusText = if (count > 0) "CardboardXR: Hands Detected ($count)" else "CardboardXR: Scanning for hands..."
+                    } catch (_: Exception) {
+                        handStatusText = "CardboardXR: Hand Tracking Active"
+                    }
+                } else {
+                    handStatusText = "CardboardXR: Model Asset Missing"
+                }
+
                 imageProxy.close()
             }
 
@@ -138,7 +182,10 @@ fun CardboardDualEyeVrLayout() {
         }, executor)
 
         onDispose {
-            runCatching { cameraProviderFuture.get().unbindAll() }
+            runCatching {
+                cameraProviderFuture.get().unbindAll()
+                handLandmarker?.close()
+            }
         }
     }
 
@@ -155,46 +202,87 @@ fun CardboardDualEyeVrLayout() {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(modifier = Modifier.weight(1f).fillMaxHeight().padding(end = 4.dp), contentAlignment = Alignment.Center) {
-                VrLensViewport(eyeLabel = "LEFT EYE", bitmap = cameraBitmap, horizontalOffsetDp = ipdOffsetDp.dp)
+                VrLensViewport(
+                    eyeLabel = "LEFT EYE",
+                    bitmap = cameraBitmap,
+                    handResult = handLandmarkerResult,
+                    horizontalOffsetDp = ipdOffsetDp.dp
+                )
             }
 
             Box(modifier = Modifier.fillMaxHeight(0.85f).width(2.dp).background(Color.DarkGray))
 
             Box(modifier = Modifier.weight(1f).fillMaxHeight().padding(start = 4.dp), contentAlignment = Alignment.Center) {
-                VrLensViewport(eyeLabel = "RIGHT EYE", bitmap = cameraBitmap, horizontalOffsetDp = (-ipdOffsetDp).dp)
+                VrLensViewport(
+                    eyeLabel = "RIGHT EYE",
+                    bitmap = cameraBitmap,
+                    handResult = handLandmarkerResult,
+                    horizontalOffsetDp = (-ipdOffsetDp).dp
+                )
             }
         }
 
-        Row(
+        // HIGH VISIBILITY HUD & IPD CONTROLS
+        Surface(
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 8.dp)
-                .background(Color.Black.copy(alpha = 0.7f), shape = RoundedCornerShape(20.dp))
-                .padding(horizontal = 12.dp, vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(top = 16.dp),
+            color = Color.Black.copy(alpha = 0.85f),
+            shape = RoundedCornerShape(24.dp),
+            border = BorderStroke(1.dp, Color.Cyan)
         ) {
-            Button(onClick = { if (ipdOffsetDp > 0) ipdOffsetDp -= 4f }, shape = CircleShape) {
-                Text(text = "IPD -", fontSize = 11.sp)
-            }
-            Text(text = "IPD Shift: ${ipdOffsetDp.toInt()}dp", color = Color.White, fontSize = 11.sp)
-            Button(onClick = { ipdOffsetDp += 4f }, shape = CircleShape) {
-                Text(text = "IPD +", fontSize = 11.sp)
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Button(onClick = { if (ipdOffsetDp > 0) ipdOffsetDp -= 4f }, shape = CircleShape) {
+                    Text(text = "IPD -", fontSize = 12.sp)
+                }
+                Text(
+                    text = "$handStatusText  |  IPD: ${ipdOffsetDp.toInt()}dp",
+                    color = Color.Cyan,
+                    fontSize = 13.sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                )
+                Button(onClick = { ipdOffsetDp += 4f }, shape = CircleShape) {
+                    Text(text = "IPD +", fontSize = 12.sp)
+                }
             }
         }
 
+        // Bottom Branding
         Text(
-            text = "Google Cardboard VR Passthrough • Tap IPD +/- to align eyes",
-            color = Color.Gray,
-            fontSize = 10.sp,
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp)
+            text = "CardboardXR • AI Hand Tracking & Passthrough",
+            color = Color.LightGray,
+            fontSize = 11.sp,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 6.dp)
         )
     }
 }
 
 @Composable
-fun VrLensViewport(eyeLabel: String, bitmap: Bitmap?, horizontalOffsetDp: Dp) {
+fun VrLensViewport(
+    eyeLabel: String,
+    bitmap: Bitmap?,
+    handResult: HandLandmarkerResult?,
+    horizontalOffsetDp: Dp
+) {
     val vrLensShape = remember { RoundedCornerShape(36.dp) }
+
+    // MediaPipe 21 Hand Landmark Connections (Wireframe Skeleton)
+    val connections = remember {
+        listOf(
+            Pair(0, 1), Pair(1, 2), Pair(2, 3), Pair(3, 4),         // Thumb
+            Pair(0, 5), Pair(5, 6), Pair(6, 7), Pair(7, 8),         // Index
+            Pair(5, 9), Pair(9, 10), Pair(10, 11), Pair(11, 12),    // Middle
+            Pair(9, 13), Pair(13, 14), Pair(14, 15), Pair(15, 16),  // Ring
+            Pair(13, 17), Pair(17, 18), Pair(18, 19), Pair(19, 20), // Pinky
+            Pair(0, 17)                                              // Palm base
+        )
+    }
 
     Box(
         modifier = Modifier
@@ -207,21 +295,54 @@ fun VrLensViewport(eyeLabel: String, bitmap: Bitmap?, horizontalOffsetDp: Dp) {
     ) {
         if (bitmap != null) {
             val imageBitmap = remember(bitmap) { bitmap.asImageBitmap() }
-            Image(
-                bitmap = imageBitmap,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .scale(1.25f)
-                    .offset(x = horizontalOffsetDp)
-            )
+            Box(modifier = Modifier.fillMaxSize()) {
+                Image(
+                    bitmap = imageBitmap,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .scale(1.25f)
+                        .offset(x = horizontalOffsetDp)
+                )
+
+                // Real-time MediaPipe Hand Skeleton Overlay (Cyan bones + Green joints)
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val hands = handResult?.landmarks()
+                    if (!hands.isNullOrEmpty()) {
+                        for (hand in hands) {
+                            // Draw bone connection lines
+                            for ((startIdx, endIdx) in connections) {
+                                val p1 = hand[startIdx]
+                                val p2 = hand[endIdx]
+                                drawLine(
+                                    color = Color.Cyan,
+                                    start = Offset(p1.x() * size.width, p1.y() * size.height),
+                                    end = Offset(p2.x() * size.width, p2.y() * size.height),
+                                    strokeWidth = 3.5.dp.toPx()
+                                )
+                            }
+                            // Draw joint landmark circles
+                            for (landmark in hand) {
+                                val x = landmark.x() * size.width
+                                val y = landmark.y() * size.height
+                                drawCircle(
+                                    color = Color.Green,
+                                    radius = 5.dp.toPx(),
+                                    center = Offset(x, y)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         } else {
             Box(modifier = Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
                 Text(text = "Initializing Camera...", color = Color.Gray, fontSize = 12.sp)
             }
         }
 
+        // Center VR Reticle
         Box(
             modifier = Modifier
                 .size(10.dp)
@@ -229,6 +350,7 @@ fun VrLensViewport(eyeLabel: String, bitmap: Bitmap?, horizontalOffsetDp: Dp) {
                 .border(1.dp, Color.White, CircleShape)
         )
 
+        // Eye Label
         Surface(
             modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp),
             color = Color.Black.copy(alpha = 0.7f),
