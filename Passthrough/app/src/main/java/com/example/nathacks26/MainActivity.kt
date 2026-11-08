@@ -253,8 +253,11 @@ fun CardboardDualEyeVrLayout() {
                                     val maxJumpThreshold = 0.35f
 
                                     if (!isFingerDetected || distance < maxJumpThreshold) {
-                                        targetFingerPos = Offset(rawX, rawY)
-                                        isFingerDetected = true
+                                        val newTarget = Offset(rawX, rawY)
+                                        executor.execute {
+                                            targetFingerPos = newTarget
+                                            isFingerDetected = true
+                                        }
                                     }
 
                                     // High-specificity OCR word identification using Region of Interest (ROI) cropping with vertical/horizontal precision weighting
@@ -314,20 +317,22 @@ fun CardboardDualEyeVrLayout() {
                                                         }
                                                     }
                                                     val detectedWord = bestWord?.trim()
-                                                    if (detectedWord != null && detectedWord.length >= 2) {
-                                                        if (detectedWord == candidateWord) {
-                                                            candidateStreak++
-                                                            if (candidateStreak >= 2) {
-                                                                identifiedWord = detectedWord
+                                                    executor.execute {
+                                                        if (detectedWord != null && detectedWord.length >= 2) {
+                                                            if (detectedWord == candidateWord) {
+                                                                candidateStreak++
+                                                                if (candidateStreak >= 2) {
+                                                                    identifiedWord = detectedWord
+                                                                }
+                                                            } else {
+                                                                candidateWord = detectedWord
+                                                                candidateStreak = 1
                                                             }
                                                         } else {
-                                                            candidateWord = detectedWord
-                                                            candidateStreak = 1
+                                                            candidateWord = null
+                                                            candidateStreak = 0
+                                                            identifiedWord = null
                                                         }
-                                                    } else {
-                                                        candidateWord = null
-                                                        candidateStreak = 0
-                                                        identifiedWord = null
                                                     }
 
                                                     if (!croppedBitmap.isRecycled) {
@@ -342,21 +347,25 @@ fun CardboardDualEyeVrLayout() {
                                         }
                                     }
                                 } else {
+                                    executor.execute {
+                                        missingFramesCount++
+                                        if (missingFramesCount > 8) { // ~250ms grace period to eliminate flashing
+                                            isFingerDetected = false
+                                            identifiedWord = null
+                                            candidateWord = null
+                                            candidateStreak = 0
+                                        }
+                                    }
+                                }
+                            } else {
+                                executor.execute {
                                     missingFramesCount++
-                                    if (missingFramesCount > 8) { // ~250ms grace period to eliminate flashing
+                                    if (missingFramesCount > 8) {
                                         isFingerDetected = false
                                         identifiedWord = null
                                         candidateWord = null
                                         candidateStreak = 0
                                     }
-                                }
-                            } else {
-                                missingFramesCount++
-                                if (missingFramesCount > 8) {
-                                    isFingerDetected = false
-                                    identifiedWord = null
-                                    candidateWord = null
-                                    candidateStreak = 0
                                 }
                             }
                         } catch (e: Exception) {
