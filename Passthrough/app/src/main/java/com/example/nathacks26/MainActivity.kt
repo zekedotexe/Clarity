@@ -14,6 +14,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -28,10 +29,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -41,6 +44,12 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.nathacks26.ui.theme.NatHacks26Theme
+import com.google.mediapipe.framework.image.BitmapImageBuilder
+import com.google.mediapipe.tasks.core.BaseOptions
+import com.google.mediapipe.tasks.vision.core.RunningMode
+import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -102,7 +111,45 @@ fun CardboardDualEyeVrLayout() {
     var cameraBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var ipdOffsetDp by remember { mutableFloatStateOf(24f) }
 
-    // Reusable Matrix and Matrix allocation optimization
+    // Rendered normalized position & target normalized position for butter-smooth VSYNC interpolation
+    var fingerPos by remember { mutableStateOf(Offset(0.5f, 0.5f)) }
+    var targetFingerPos by remember { mutableStateOf(Offset(0.5f, 0.5f)) }
+    var isFingerDetected by remember { mutableStateOf(false) }
+
+    // Continuous 60Hz/120Hz VSYNC animation loop to eliminate camera frame stutter/teleporting
+    LaunchedEffect(Unit) {
+        while (true) {
+            withFrameNanos { _ ->
+                val smoothingFactor = 0.25f
+                fingerPos = Offset(
+                    fingerPos.x + smoothingFactor * (targetFingerPos.x - fingerPos.x),
+                    fingerPos.y + smoothingFactor * (targetFingerPos.y - fingerPos.y)
+                )
+            }
+        }
+    }
+
+    // Initialize MediaPipe HandLandmarker safely
+    val handLandmarker = remember {
+        try {
+            val baseOptions = BaseOptions.builder()
+                .setModelAssetPath("hand_landmarker.task")
+                .build()
+            val options = HandLandmarker.HandLandmarkerOptions.builder()
+                .setBaseOptions(baseOptions)
+                .setRunningMode(RunningMode.IMAGE)
+                .setNumHands(1)
+                .build()
+            HandLandmarker.createFromOptions(context, options)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
+    val isAnalyzing = remember { AtomicBoolean(false) }
+
     DisposableEffect(lifecycleOwner) {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
         val executor = ContextCompat.getMainExecutor(context)
@@ -119,13 +166,35 @@ fun CardboardDualEyeVrLayout() {
                 val rotation = imageProxy.imageInfo.rotationDegrees
                 val bitmap = imageProxy.toBitmap()
 
-                cameraBitmap = if (rotation != 0) {
+                val rotatedBitmap = if (rotation != 0) {
                     matrix.reset()
                     matrix.postRotate(rotation.toFloat())
                     Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
                 } else {
                     bitmap
                 }
+                cameraBitmap = rotatedBitmap
+
+                if (handLandmarker != null && isAnalyzing.compareAndSet(false, true)) {
+                    analysisExecutor.execute {
+                        try {
+                            val mpImage = BitmapImageBuilder(rotatedBitmap).build()
+                            val result = handLandmarker.detect(mpImage)
+                            if (result.landmarks().isNotEmpty()) {
+                                val indexTip = result.landmarks()[0][8] // Index finger tip landmark
+                                targetFingerPos = Offset(indexTip.x(), indexTip.y())
+                                isFingerDetected = true
+                            } else {
+                                isFingerDetected = false
+                            }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        } finally {
+                            isAnalyzing.set(false)
+                        }
+                    }
+                }
+
                 imageProxy.close()
             }
 
@@ -139,6 +208,8 @@ fun CardboardDualEyeVrLayout() {
 
         onDispose {
             runCatching { cameraProviderFuture.get().unbindAll() }
+            analysisExecutor.shutdown()
+            handLandmarker?.close()
         }
     }
 
@@ -155,13 +226,25 @@ fun CardboardDualEyeVrLayout() {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(modifier = Modifier.weight(1f).fillMaxHeight().padding(end = 4.dp), contentAlignment = Alignment.Center) {
-                VrLensViewport(eyeLabel = "LEFT EYE", bitmap = cameraBitmap, horizontalOffsetDp = ipdOffsetDp.dp)
+                VrLensViewport(
+                    eyeLabel = "LEFT EYE",
+                    bitmap = cameraBitmap,
+                    horizontalOffsetDp = ipdOffsetDp.dp,
+                    fingerPos = fingerPos,
+                    isFingerDetected = isFingerDetected
+                )
             }
 
             Box(modifier = Modifier.fillMaxHeight(0.85f).width(2.dp).background(Color.DarkGray))
 
             Box(modifier = Modifier.weight(1f).fillMaxHeight().padding(start = 4.dp), contentAlignment = Alignment.Center) {
-                VrLensViewport(eyeLabel = "RIGHT EYE", bitmap = cameraBitmap, horizontalOffsetDp = (-ipdOffsetDp).dp)
+                VrLensViewport(
+                    eyeLabel = "RIGHT EYE",
+                    bitmap = cameraBitmap,
+                    horizontalOffsetDp = (-ipdOffsetDp).dp,
+                    fingerPos = fingerPos,
+                    isFingerDetected = isFingerDetected
+                )
             }
         }
 
@@ -184,7 +267,7 @@ fun CardboardDualEyeVrLayout() {
         }
 
         Text(
-            text = "Google Cardboard VR Passthrough • Tap IPD +/- to align eyes",
+            text = "Google Cardboard VR Passthrough • Index Finger Tracking Active",
             color = Color.Gray,
             fontSize = 10.sp,
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp)
@@ -193,7 +276,13 @@ fun CardboardDualEyeVrLayout() {
 }
 
 @Composable
-fun VrLensViewport(eyeLabel: String, bitmap: Bitmap?, horizontalOffsetDp: Dp) {
+fun VrLensViewport(
+    eyeLabel: String,
+    bitmap: Bitmap?,
+    horizontalOffsetDp: Dp,
+    fingerPos: Offset,
+    isFingerDetected: Boolean
+) {
     val vrLensShape = remember { RoundedCornerShape(36.dp) }
 
     Box(
@@ -216,18 +305,56 @@ fun VrLensViewport(eyeLabel: String, bitmap: Bitmap?, horizontalOffsetDp: Dp) {
                     .scale(1.25f)
                     .offset(x = horizontalOffsetDp)
             )
+
+            if (isFingerDetected) {
+                val density = LocalDensity.current
+                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    val boxWidthPx = with(density) { maxWidth.toPx() }
+                    val boxHeightPx = with(density) { maxHeight.toPx() }
+                    val offsetPx = with(density) { horizontalOffsetDp.toPx() }
+
+                    val bmpW = bitmap.width.toFloat()
+                    val bmpH = bitmap.height.toFloat()
+
+                    if (bmpW > 0f && bmpH > 0f && boxWidthPx > 0f && boxHeightPx > 0f) {
+                        val scaleFactor = maxOf(boxWidthPx / bmpW, boxHeightPx / bmpH)
+                        val totalScale = scaleFactor * 1.25f
+
+                        val dx = (fingerPos.x - 0.5f) * bmpW * totalScale + offsetPx
+                        val dy = (fingerPos.y - 0.5f) * bmpH * totalScale
+
+                        val dotCenterX = boxWidthPx / 2f + dx
+                        val dotCenterY = boxHeightPx / 2f + dy
+
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            val dotCenter = Offset(dotCenterX, dotCenterY)
+                            // Outer circle overlay
+                            drawCircle(
+                                color = Color.Cyan.copy(alpha = 0.4f),
+                                radius = 48f,
+                                center = dotCenter
+                            )
+                            // Middle circle
+                            drawCircle(
+                                color = Color.Blue,
+                                radius = 24f,
+                                center = dotCenter
+                            )
+                            // Inner core circle
+                            drawCircle(
+                                color = Color.White,
+                                radius = 8f,
+                                center = dotCenter
+                            )
+                        }
+                    }
+                }
+            }
         } else {
             Box(modifier = Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
                 Text(text = "Initializing Camera...", color = Color.Gray, fontSize = 12.sp)
             }
         }
-
-        Box(
-            modifier = Modifier
-                .size(10.dp)
-                .background(Color.Cyan.copy(alpha = 0.9f), shape = CircleShape)
-                .border(1.dp, Color.White, CircleShape)
-        )
 
         Surface(
             modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp),
