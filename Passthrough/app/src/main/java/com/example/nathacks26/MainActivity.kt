@@ -207,10 +207,23 @@ fun CardboardDualEyeVrLayout() {
 
         cameraProviderFuture.addListener({
             val cameraProvider = cameraProviderFuture.get()
-            val imageAnalysis = ImageAnalysis.Builder()
+            val imageAnalysisBuilder = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
-                .build()
+
+            val camera2Extender = androidx.camera.camera2.interop.Camera2Interop.Extender(imageAnalysisBuilder)
+            // Lock focus to fixed mode & distance to prevent auto-focus hunting and brightness shifts
+            camera2Extender.setCaptureRequestOption(
+                android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE,
+                android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_OFF
+            )
+            // Set fixed focal distance (2.5f diopters = ~40cm distance, ideal for reading screens and books)
+            camera2Extender.setCaptureRequestOption(
+                android.hardware.camera2.CaptureRequest.LENS_FOCUS_DISTANCE,
+                2.5f
+            )
+
+            val imageAnalysis = imageAnalysisBuilder.build()
 
             imageAnalysis.setAnalyzer(executor) { imageProxy ->
                 val rotation = imageProxy.imageInfo.rotationDegrees
