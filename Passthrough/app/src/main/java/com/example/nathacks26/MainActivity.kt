@@ -1,6 +1,7 @@
 package com.example.nathacks26
 
 import android.Manifest
+import android.app.Activity
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -147,19 +148,29 @@ fun CardboardDualEyeVrLayout() {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
+    // Initialize Settings Manager
+    val settingsManager = remember { SettingsManager(context) }
+    val settingsState = settingsManager.state
+
+    // Apply brightness on startup
+    LaunchedEffect(settingsState.screenBrightness) {
+        // Brightness applied via window attributes or settings manager
+    }
+
     var cameraBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var ipdOffsetDp by remember { mutableFloatStateOf(24f) }
+    var is2DSettingsOpen by remember { mutableStateOf(false) }
 
     // Rendered normalized position & target normalized position for butter-smooth VSYNC interpolation
     var fingerPos by remember { mutableStateOf(Offset(0.5f, 0.5f)) }
     var targetFingerPos by remember { mutableStateOf(Offset(0.5f, 0.5f)) }
     var isFingerDetected by remember { mutableStateOf(false) }
 
-    // Continuous 60Hz/120Hz VSYNC animation loop to eliminate camera frame stutter/teleporting
-    LaunchedEffect(Unit) {
+    // Continuous 60Hz/120Hz VSYNC animation loop with sensitivity factor
+    LaunchedEffect(settingsState.fingerSensitivity) {
         while (true) {
             withFrameNanos { _ ->
-                val smoothingFactor = 0.25f
+                val baseSmoothing = 0.15f
+                val smoothingFactor = (baseSmoothing * settingsState.fingerSensitivity).coerceIn(0.05f, 0.35f)
                 fingerPos = Offset(
                     fingerPos.x + smoothingFactor * (targetFingerPos.x - fingerPos.x),
                     fingerPos.y + smoothingFactor * (targetFingerPos.y - fingerPos.y)
@@ -424,7 +435,7 @@ fun CardboardDualEyeVrLayout() {
                 VrLensViewport(
                     eyeLabel = "LEFT EYE",
                     bitmap = cameraBitmap,
-                    horizontalOffsetDp = ipdOffsetDp.dp,
+                    horizontalOffsetDp = settingsState.ipdOffsetDp.dp,
                     fingerPos = fingerPos,
                     isFingerDetected = isFingerDetected,
                     identifiedWord = identifiedWord
@@ -437,7 +448,7 @@ fun CardboardDualEyeVrLayout() {
                 VrLensViewport(
                     eyeLabel = "RIGHT EYE",
                     bitmap = cameraBitmap,
-                    horizontalOffsetDp = (-ipdOffsetDp).dp,
+                    horizontalOffsetDp = (-settingsState.ipdOffsetDp).dp,
                     fingerPos = fingerPos,
                     isFingerDetected = isFingerDetected,
                     identifiedWord = identifiedWord
@@ -445,28 +456,18 @@ fun CardboardDualEyeVrLayout() {
             }
         }
 
-        Row(
+        // Minimalist Gear Settings Icon in Top Corner
+        SettingsIconButton(
+            onClick = { is2DSettingsOpen = true },
             modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 8.dp)
-                .background(Color.Black.copy(alpha = 0.7f), shape = RoundedCornerShape(20.dp))
-                .padding(horizontal = 12.dp, vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Button(onClick = { if (ipdOffsetDp > 0) ipdOffsetDp -= 4f }, shape = CircleShape) {
-                Text(text = "IPD -", fontSize = 11.sp)
-            }
-            Text(text = "IPD Shift: ${ipdOffsetDp.toInt()}dp", color = Color.White, fontSize = 11.sp)
-            Button(onClick = { ipdOffsetDp += 4f }, shape = CircleShape) {
-                Text(text = "IPD +", fontSize = 11.sp)
-            }
-        }
+                .align(Alignment.TopEnd)
+                .padding(top = 16.dp, end = 16.dp)
+        )
 
         Surface(
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 52.dp),
+                .padding(top = 16.dp),
             color = if (identifiedWord != null) Color.Cyan.copy(alpha = 0.95f) else Color.DarkGray.copy(alpha = 0.85f),
             shape = RoundedCornerShape(16.dp)
         ) {
@@ -479,12 +480,14 @@ fun CardboardDualEyeVrLayout() {
             )
         }
 
-        Text(
-            text = "Google Cardboard VR Passthrough • Word OCR & Finger Tracking Active",
-            color = Color.Gray,
-            fontSize = 10.sp,
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp)
-        )
+        // 2D Touchscreen Settings Dialog Sheet
+        if (is2DSettingsOpen) {
+            SettingsDialog(
+                settingsManager = settingsManager,
+                activity = context as? Activity,
+                onDismiss = { is2DSettingsOpen = false }
+            )
+        }
     }
 }
 
