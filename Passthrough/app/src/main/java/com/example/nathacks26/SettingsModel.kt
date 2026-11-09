@@ -1,31 +1,33 @@
 package com.example.nathacks26
 
-import android.app.Activity
 import android.content.Context
 import android.content.SharedPreferences
-import android.media.AudioManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 
 /**
- * Data model for Application Settings covering Accessibility, Volume, and Video adjustments.
+ * Data model for Application Settings covering Accessibility, Video, Identified Word Styling, and Target Words.
  */
 data class ApplicationSettingsState(
     // Accessibility
     val textScale: Float = 1.0f,          // Enlarging text (0.8f .. 2.5f)
-    val screenBrightness: Float = 0.8f,   // Screen brightness (0.1f .. 1.0f)
-
-    // Volume
-    val audioVolume: Float = 0.8f,        // Volume of the audio (0.0f .. 1.0f)
 
     // Video
     val ipdOffsetDp: Float = 24.0f,       // Eye-width / IPD offset (0.0f .. 60.0f)
-    val fingerSensitivity: Float = 1.0f   // Sensitivity of finger-point selection (0.5f .. 3.0f)
+    val fingerSensitivity: Float = 1.0f,  // Sensitivity of finger-point selection (0.5f .. 3.0f)
+
+    // Identified Word Styling
+    val wordFontFamily: String = "Default", // "Default", "Monospace", "Serif", "Cursive"
+    val wordColorHex: String = "#00FFFF",     // "#00FFFF" (Cyan), "#FFFFFF" (White), "#00FF00" (Green), "#FFFF00" (Yellow)
+    val wordLetterSpacingSp: Float = 1.0f,    // Letter spacing (0.0f .. 8.0f sp)
+
+    // Target Words: Map of word -> isHeard (true if spoken/heard, false if read)
+    val targetWordsMap: Map<String, Boolean> = emptyMap()
 )
 
 /**
- * Manager class to handle state persistence and system-level applications (brightness, volume).
+ * Manager class to handle state persistence.
  */
 class SettingsManager(context: Context) {
     private val prefs: SharedPreferences =
@@ -40,20 +42,6 @@ class SettingsManager(context: Context) {
         prefs.edit().putFloat(KEY_TEXT_SCALE, clamped).apply()
     }
 
-    fun updateScreenBrightness(brightness: Float, activity: Activity? = null) {
-        val clamped = brightness.coerceIn(0.1f, 1.0f)
-        state = state.copy(screenBrightness = clamped)
-        prefs.edit().putFloat(KEY_BRIGHTNESS, clamped).apply()
-        activity?.let { applyBrightness(it, clamped) }
-    }
-
-    fun updateAudioVolume(volume: Float, context: Context) {
-        val clamped = volume.coerceIn(0.0f, 1.0f)
-        state = state.copy(audioVolume = clamped)
-        prefs.edit().putFloat(KEY_VOLUME, clamped).apply()
-        applyAudioVolume(context, clamped)
-    }
-
     fun updateIpdOffset(offsetDp: Float) {
         val clamped = offsetDp.coerceIn(0.0f, 60.0f)
         state = state.copy(ipdOffsetDp = clamped)
@@ -66,51 +54,80 @@ class SettingsManager(context: Context) {
         prefs.edit().putFloat(KEY_SENSITIVITY, clamped).apply()
     }
 
-    fun resetDefaults(activity: Activity? = null, context: Context) {
+    fun updateWordFontFamily(font: String) {
+        state = state.copy(wordFontFamily = font)
+        prefs.edit().putString(KEY_WORD_FONT, font).apply()
+    }
+
+    fun updateWordColorHex(colorHex: String) {
+        state = state.copy(wordColorHex = colorHex)
+        prefs.edit().putString(KEY_WORD_COLOR, colorHex).apply()
+    }
+
+    fun updateWordLetterSpacing(spacing: Float) {
+        val clamped = spacing.coerceIn(0.0f, 8.0f)
+        state = state.copy(wordLetterSpacingSp = clamped)
+        prefs.edit().putFloat(KEY_WORD_SPACING, clamped).apply()
+    }
+
+    fun addSavedWord(word: String, isHeard: Boolean = false) {
+        val trimmed = word.trim()
+        if (trimmed.isNotEmpty()) {
+            val currentMap = state.targetWordsMap.toMutableMap()
+            val existingHeard = currentMap[trimmed] ?: false
+            currentMap[trimmed] = existingHeard || isHeard
+            state = state.copy(targetWordsMap = currentMap)
+            saveTargetWordsToPrefs(currentMap)
+        }
+    }
+
+    fun removeSavedWord(word: String) {
+        val currentMap = state.targetWordsMap.toMutableMap()
+        currentMap.remove(word)
+        state = state.copy(targetWordsMap = currentMap)
+        saveTargetWordsToPrefs(currentMap)
+    }
+
+    private fun saveTargetWordsToPrefs(map: Map<String, Boolean>) {
+        val serialized = map.entries.joinToString(";") { "${it.key}:${it.value}" }
+        prefs.edit().putString(KEY_TARGET_WORDS_MAP, serialized).apply()
+    }
+
+    fun resetDefaults() {
         state = ApplicationSettingsState()
         prefs.edit().clear().apply()
-        activity?.let { applyBrightness(it, state.screenBrightness) }
-        applyAudioVolume(context, state.audioVolume)
     }
 
     private fun loadSettings(): ApplicationSettingsState {
+        val mapStr = prefs.getString(KEY_TARGET_WORDS_MAP, null)
+        val targetMap = if (mapStr != null && mapStr.isNotEmpty()) {
+            mapStr.split(";").mapNotNull { entry ->
+                val parts = entry.split(":")
+                if (parts.size == 2) parts[0] to parts[1].toBoolean() else null
+            }.toMap()
+        } else {
+            val oldSet = prefs.getStringSet("saved_words", emptySet()) ?: emptySet()
+            oldSet.associateWith { false }
+        }
+
         return ApplicationSettingsState(
             textScale = prefs.getFloat(KEY_TEXT_SCALE, 1.0f),
-            screenBrightness = prefs.getFloat(KEY_BRIGHTNESS, 0.8f),
-            audioVolume = prefs.getFloat(KEY_VOLUME, 0.8f),
             ipdOffsetDp = prefs.getFloat(KEY_IPD, 24.0f),
-            fingerSensitivity = prefs.getFloat(KEY_SENSITIVITY, 1.0f)
+            fingerSensitivity = prefs.getFloat(KEY_SENSITIVITY, 1.0f),
+            wordFontFamily = prefs.getString(KEY_WORD_FONT, "Default") ?: "Default",
+            wordColorHex = prefs.getString(KEY_WORD_COLOR, "#00FFFF") ?: "#00FFFF",
+            wordLetterSpacingSp = prefs.getFloat(KEY_WORD_SPACING, 1.0f),
+            targetWordsMap = targetMap
         )
     }
 
     companion object {
         private const val KEY_TEXT_SCALE = "text_scale"
-        private const val KEY_BRIGHTNESS = "screen_brightness"
-        private const val KEY_VOLUME = "audio_volume"
         private const val KEY_IPD = "ipd_offset"
         private const val KEY_SENSITIVITY = "finger_sensitivity"
-
-        fun applyBrightness(activity: Activity, brightnessFraction: Float) {
-            try {
-                val layoutParams = activity.window.attributes
-                layoutParams.screenBrightness = brightnessFraction.coerceIn(0.01f, 1.0f)
-                activity.window.attributes = layoutParams
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-
-        fun applyAudioVolume(context: Context, volumeFraction: Float) {
-            try {
-                val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-                if (audioManager != null) {
-                    val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                    val targetVol = (maxVol * volumeFraction).toInt()
-                    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetVol, 0)
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
+        private const val KEY_WORD_FONT = "word_font"
+        private const val KEY_WORD_COLOR = "word_color"
+        private const val KEY_WORD_SPACING = "word_spacing"
+        private const val KEY_TARGET_WORDS_MAP = "target_words_map"
     }
 }

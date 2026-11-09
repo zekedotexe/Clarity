@@ -7,6 +7,8 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.os.Bundle
+import android.speech.tts.TextToSpeech
+import java.util.Locale
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -152,13 +154,9 @@ fun CardboardDualEyeVrLayout() {
     val settingsManager = remember { SettingsManager(context) }
     val settingsState = settingsManager.state
 
-    // Apply brightness on startup
-    LaunchedEffect(settingsState.screenBrightness) {
-        // Brightness applied via window attributes or settings manager
-    }
-
     var cameraBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var is2DSettingsOpen by remember { mutableStateOf(false) }
+    // Open settings GUI immediately on startup as requested
+    var is2DSettingsOpen by remember { mutableStateOf(true) }
 
     // Rendered normalized position & target normalized position for butter-smooth VSYNC interpolation
     var fingerPos by remember { mutableStateOf(Offset(0.5f, 0.5f)) }
@@ -210,6 +208,50 @@ fun CardboardDualEyeVrLayout() {
     var candidateStreak by remember { mutableIntStateOf(0) }
     var missingFramesCount by remember { mutableIntStateOf(0) }
     val lastOcrTime = remember { mutableLongStateOf(0L) }
+
+    var toastMessage by remember { mutableStateOf<String?>(null) }
+
+    val tts = remember {
+        var instance: TextToSpeech? = null
+        instance = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                instance?.language = Locale.US
+            }
+        }
+        instance
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            tts?.stop()
+            tts?.shutdown()
+        }
+    }
+
+    LaunchedEffect(toastMessage) {
+        if (toastMessage != null) {
+            kotlinx.coroutines.delay(3000)
+            toastMessage = null
+        }
+    }
+
+    LaunchedEffect(identifiedWord) {
+        val currentWord = identifiedWord
+        if (currentWord != null && currentWord.length >= 2) {
+            kotlinx.coroutines.delay(5000)
+            if (identifiedWord == currentWord) {
+                settingsManager.addSavedWord(currentWord, isHeard = false)
+                toastMessage = "Word Read: $currentWord"
+
+                kotlinx.coroutines.delay(5000)
+                if (identifiedWord == currentWord) {
+                    settingsManager.addSavedWord(currentWord, isHeard = true)
+                    toastMessage = "Word Spoken: $currentWord"
+                    tts.speak(currentWord, TextToSpeech.QUEUE_FLUSH, null, "WordTTS")
+                }
+            }
+        }
+    }
 
     DisposableEffect(lifecycleOwner) {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
@@ -433,12 +475,15 @@ fun CardboardDualEyeVrLayout() {
         ) {
             Box(modifier = Modifier.weight(1f).fillMaxHeight().padding(end = 4.dp), contentAlignment = Alignment.Center) {
                 VrLensViewport(
-                    eyeLabel = "LEFT EYE",
                     bitmap = cameraBitmap,
                     horizontalOffsetDp = settingsState.ipdOffsetDp.dp,
                     fingerPos = fingerPos,
                     isFingerDetected = isFingerDetected,
-                    identifiedWord = identifiedWord
+                    identifiedWord = identifiedWord,
+                    wordFontFamily = settingsState.wordFontFamily,
+                    wordColorHex = settingsState.wordColorHex,
+                    wordLetterSpacingSp = settingsState.wordLetterSpacingSp,
+                    toastMessage = toastMessage
                 )
             }
 
@@ -446,12 +491,15 @@ fun CardboardDualEyeVrLayout() {
 
             Box(modifier = Modifier.weight(1f).fillMaxHeight().padding(start = 4.dp), contentAlignment = Alignment.Center) {
                 VrLensViewport(
-                    eyeLabel = "RIGHT EYE",
                     bitmap = cameraBitmap,
                     horizontalOffsetDp = (-settingsState.ipdOffsetDp).dp,
                     fingerPos = fingerPos,
                     isFingerDetected = isFingerDetected,
-                    identifiedWord = identifiedWord
+                    identifiedWord = identifiedWord,
+                    wordFontFamily = settingsState.wordFontFamily,
+                    wordColorHex = settingsState.wordColorHex,
+                    wordLetterSpacingSp = settingsState.wordLetterSpacingSp,
+                    toastMessage = toastMessage
                 )
             }
         }
@@ -464,27 +512,10 @@ fun CardboardDualEyeVrLayout() {
                 .padding(top = 16.dp, end = 16.dp)
         )
 
-        Surface(
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 16.dp),
-            color = if (identifiedWord != null) Color.Cyan.copy(alpha = 0.95f) else Color.DarkGray.copy(alpha = 0.85f),
-            shape = RoundedCornerShape(16.dp)
-        ) {
-            Text(
-                text = identifiedWord?.let { "🎯 Identified Word: $it" }
-                    ?: if (isFingerDetected) "👆 Pointing at text (searching word)..." else "🖐️ Point your index finger at any word",
-                color = if (identifiedWord != null) Color.Black else Color.White,
-                fontSize = 12.sp,
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp)
-            )
-        }
-
-        // 2D Touchscreen Settings Dialog Sheet
+        // 2D Touchscreen Settings Dialog Sheet on startup & via gear icon
         if (is2DSettingsOpen) {
             SettingsDialog(
                 settingsManager = settingsManager,
-                activity = context as? Activity,
                 onDismiss = { is2DSettingsOpen = false }
             )
         }
@@ -493,12 +524,15 @@ fun CardboardDualEyeVrLayout() {
 
 @Composable
 fun VrLensViewport(
-    eyeLabel: String,
     bitmap: Bitmap?,
     horizontalOffsetDp: Dp,
     fingerPos: Offset,
     isFingerDetected: Boolean,
-    identifiedWord: String?
+    identifiedWord: String?,
+    wordFontFamily: String,
+    wordColorHex: String,
+    wordLetterSpacingSp: Float,
+    toastMessage: String?
 ) {
     val vrLensShape = remember { RoundedCornerShape(36.dp) }
 
@@ -573,32 +607,54 @@ fun VrLensViewport(
             }
         }
 
-        Surface(
-            modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp),
-            color = Color.Black.copy(alpha = 0.7f),
-            shape = RoundedCornerShape(12.dp)
-        ) {
-            Text(
-                text = eyeLabel,
-                color = Color.White,
-                fontSize = 11.sp,
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-            )
+        if (toastMessage != null) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 16.dp),
+                color = Color(0xFF4CAF50).copy(alpha = 0.95f),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text(
+                    text = toastMessage,
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                )
+            }
         }
 
         if (identifiedWord != null) {
+            val fontFamily = when (wordFontFamily) {
+                "Monospace" -> androidx.compose.ui.text.font.FontFamily.Monospace
+                "Serif" -> androidx.compose.ui.text.font.FontFamily.Serif
+                "Cursive" -> androidx.compose.ui.text.font.FontFamily.Cursive
+                else -> androidx.compose.ui.text.font.FontFamily.Default
+            }
+            val textColor = when (wordColorHex) {
+                "#FFFFFF" -> Color.White
+                "#00FF00" -> Color.Green
+                "#FFFF00" -> Color.Yellow
+                "#FF00FF" -> Color.Magenta
+                else -> Color.Cyan
+            }
+
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(bottom = 16.dp),
-                color = Color.Cyan.copy(alpha = 0.9f),
+                color = Color.Black.copy(alpha = 0.85f),
                 shape = RoundedCornerShape(12.dp)
             ) {
                 Text(
-                    text = "🎯 $identifiedWord",
-                    color = Color.Black,
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    text = identifiedWord,
+                    color = textColor,
+                    fontFamily = fontFamily,
+                    letterSpacing = wordLetterSpacingSp.sp,
+                    fontSize = 13.sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                 )
             }
         }
