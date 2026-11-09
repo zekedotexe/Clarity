@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -36,6 +37,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -45,6 +47,10 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.nathacks26.ui.theme.NatHacks26Theme
+import com.example.settings.SettingsManager
+import com.example.settings.SettingsDialog
+import com.example.settings.SettingsIconButton
+import com.example.settings.SettingsDialog
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.components.containers.NormalizedLandmark
 import com.google.mediapipe.tasks.core.BaseOptions
@@ -105,7 +111,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             NatHacks26Theme {
                 Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
-                    CardboardVrScreen()
+                    CardboardVrScreen(activity = this)
                 }
             }
         }
@@ -113,7 +119,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun CardboardVrScreen() {
+fun CardboardVrScreen(activity: Activity?) {
     val context = LocalContext.current
     var hasCameraPermission by remember {
         mutableStateOf(
@@ -133,7 +139,7 @@ fun CardboardVrScreen() {
     }
 
     if (hasCameraPermission) {
-        CardboardDualEyeVrLayout()
+        CardboardDualEyeVrLayout(activity = activity)
     } else {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Button(onClick = { launcher.launch(Manifest.permission.CAMERA) }) {
@@ -144,7 +150,7 @@ fun CardboardVrScreen() {
 }
 
 @Composable
-fun CardboardDualEyeVrLayout() {
+fun CardboardDualEyeVrLayout(activity: Activity?) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -154,16 +160,17 @@ fun CardboardDualEyeVrLayout() {
 
     // Apply brightness on startup
     LaunchedEffect(settingsState.screenBrightness) {
-        // Brightness applied via window attributes or settings manager
+        activity?.let { SettingsManager.applyBrightness(it, settingsState.screenBrightness) }
     }
 
     var cameraBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var is2DSettingsOpen by remember { mutableStateOf(false) }
 
-    // Rendered normalized position & target normalized position for butter-smooth VSYNC interpolation
+    // Rendered normalized position, target position, detection state & timestamp for ultra-smooth gliding
     var fingerPos by remember { mutableStateOf(Offset(0.5f, 0.5f)) }
     var targetFingerPos by remember { mutableStateOf(Offset(0.5f, 0.5f)) }
     var isFingerDetected by remember { mutableStateOf(false) }
+    var lastDetectionTime by remember { mutableStateOf(0L) }
 
     // Continuous 60Hz/120Hz VSYNC animation loop with sensitivity factor
     LaunchedEffect(settingsState.fingerSensitivity) {
@@ -179,7 +186,7 @@ fun CardboardDualEyeVrLayout() {
         }
     }
 
-    // Initialize MediaPipe HandLandmarker safely with RunningMode.VIDEO for temporal stability & high precision
+    // Initialize MediaPipe HandLandmarker safely with RunningMode.VIDEO for high performance
     val handLandmarker = remember {
         try {
             val baseOptions = BaseOptions.builder()
@@ -255,6 +262,7 @@ fun CardboardDualEyeVrLayout() {
                 cameraBitmap = rotatedBitmap
 
                 if (handLandmarker != null && isAnalyzing.compareAndSet(false, true)) {
+                    val timestamp = System.currentTimeMillis()
                     analysisExecutor.execute {
                         try {
                             val timestamp = System.currentTimeMillis()
@@ -424,6 +432,7 @@ fun CardboardDualEyeVrLayout() {
             .fillMaxSize()
             .background(Color.Black)
     ) {
+        // Dual Eye Stereo Layout
         Row(
             modifier = Modifier
                 .fillMaxSize()
@@ -431,26 +440,43 @@ fun CardboardDualEyeVrLayout() {
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(modifier = Modifier.weight(1f).fillMaxHeight().padding(end = 4.dp), contentAlignment = Alignment.Center) {
+            // LEFT EYE VIEWPORT
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .padding(end = 4.dp),
+                contentAlignment = Alignment.Center
+            ) {
                 VrLensViewport(
                     eyeLabel = "LEFT EYE",
                     bitmap = cameraBitmap,
                     horizontalOffsetDp = settingsState.ipdOffsetDp.dp,
                     fingerPos = fingerPos,
                     isFingerDetected = isFingerDetected,
+                    textScale = settingsState.textScale
                     identifiedWord = identifiedWord
                 )
             }
 
+            // Divider Line
             Box(modifier = Modifier.fillMaxHeight(0.85f).width(2.dp).background(Color.DarkGray))
 
-            Box(modifier = Modifier.weight(1f).fillMaxHeight().padding(start = 4.dp), contentAlignment = Alignment.Center) {
+            // RIGHT EYE VIEWPORT
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .padding(start = 4.dp),
+                contentAlignment = Alignment.Center
+            ) {
                 VrLensViewport(
                     eyeLabel = "RIGHT EYE",
                     bitmap = cameraBitmap,
                     horizontalOffsetDp = (-settingsState.ipdOffsetDp).dp,
                     fingerPos = fingerPos,
                     isFingerDetected = isFingerDetected,
+                    textScale = settingsState.textScale
                     identifiedWord = identifiedWord
                 )
             }
@@ -462,7 +488,6 @@ fun CardboardDualEyeVrLayout() {
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(top = 16.dp, end = 16.dp)
-        )
 
         Surface(
             modifier = Modifier
@@ -480,11 +505,17 @@ fun CardboardDualEyeVrLayout() {
             )
         }
 
+        Text(
+            text = "Google Cardboard VR Passthrough • Word OCR & Finger Tracking Active",
+            color = Color.Gray,
+            fontSize = 10.sp,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp)
+        )
         // 2D Touchscreen Settings Dialog Sheet
         if (is2DSettingsOpen) {
             SettingsDialog(
                 settingsManager = settingsManager,
-                activity = context as? Activity,
+                activity = activity,
                 onDismiss = { is2DSettingsOpen = false }
             )
         }
@@ -498,6 +529,7 @@ fun VrLensViewport(
     horizontalOffsetDp: Dp,
     fingerPos: Offset,
     isFingerDetected: Boolean,
+    textScale: Float
     identifiedWord: String?
 ) {
     val vrLensShape = remember { RoundedCornerShape(36.dp) }
@@ -508,11 +540,13 @@ fun VrLensViewport(
             .aspectRatio(1.1f)
             .clip(vrLensShape)
             .background(Color.Black)
-            .border(3.dp, Color.Gray.copy(alpha = 0.6f), vrLensShape),
+            .border(3.dp, Color(0xFF81C784).copy(alpha = 0.6f), vrLensShape),
         contentAlignment = Alignment.Center
     ) {
+        // Camera Passthrough Background Image
         if (bitmap != null) {
-            val imageBitmap = remember(bitmap) { bitmap.asImageBitmap() }
+            val bmp = bitmap
+            val imageBitmap = remember(bmp) { bmp.asImageBitmap() }
             Image(
                 bitmap = imageBitmap,
                 contentDescription = null,
@@ -523,6 +557,7 @@ fun VrLensViewport(
                     .offset(x = horizontalOffsetDp)
             )
 
+            // Index Finger Tracking Indicator Dot
             if (isFingerDetected) {
                 val density = LocalDensity.current
                 BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -530,8 +565,8 @@ fun VrLensViewport(
                     val boxHeightPx = with(density) { maxHeight.toPx() }
                     val offsetPx = with(density) { horizontalOffsetDp.toPx() }
 
-                    val bmpW = bitmap.width.toFloat()
-                    val bmpH = bitmap.height.toFloat()
+                    val bmpW = bmp.width.toFloat()
+                    val bmpH = bmp.height.toFloat()
 
                     if (bmpW > 0f && bmpH > 0f && boxWidthPx > 0f && boxHeightPx > 0f) {
                         val scaleFactor = maxOf(boxWidthPx / bmpW, boxHeightPx / bmpH)
@@ -542,18 +577,18 @@ fun VrLensViewport(
 
                         val dotCenterX = boxWidthPx / 2f + dx
                         val dotCenterY = boxHeightPx / 2f + dy
+                        val dotCenter = Offset(dotCenterX, dotCenterY)
 
                         Canvas(modifier = Modifier.fillMaxSize()) {
-                            val dotCenter = Offset(dotCenterX, dotCenterY)
                             // Outer circle overlay
                             drawCircle(
-                                color = Color.Cyan.copy(alpha = 0.4f),
+                                color = Color.Cyan.copy(alpha = 0.45f),
                                 radius = 48f,
                                 center = dotCenter
                             )
                             // Middle circle
                             drawCircle(
-                                color = Color.Blue,
+                                color = Color(0xFF1E88E5),
                                 radius = 24f,
                                 center = dotCenter
                             )
@@ -569,20 +604,26 @@ fun VrLensViewport(
             }
         } else {
             Box(modifier = Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
-                Text(text = "Initializing Camera...", color = Color.Gray, fontSize = 12.sp)
+                Text(
+                    text = "Initializing Camera Passthrough...",
+                    color = Color.Gray,
+                    fontSize = (12 * textScale).sp
+                )
             }
         }
 
+        // Eye Label Overlay
         Surface(
-            modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp),
-            color = Color.Black.copy(alpha = 0.7f),
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = 10.dp),
+            color = Color.Black.copy(alpha = 0.75f),
             shape = RoundedCornerShape(12.dp)
         ) {
             Text(
                 text = eyeLabel,
                 color = Color.White,
-                fontSize = 11.sp,
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                fontSize = (11 * textScale).sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
             )
         }
 
