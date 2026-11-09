@@ -172,13 +172,10 @@ fun CardboardDualEyeVrLayout(activity: Activity?) {
     var isFingerDetected by remember { mutableStateOf(false) }
     var lastDetectionTime by remember { mutableStateOf(0L) }
 
-    // Continuous VSYNC animation loop with EMA smoothing and detection grace period
+    // Continuous 60Hz/120Hz VSYNC animation loop with sensitivity factor
     LaunchedEffect(settingsState.fingerSensitivity) {
         while (true) {
             withFrameNanos { _ ->
-                val now = System.currentTimeMillis()
-                isFingerDetected = (now - lastDetectionTime) < 350L
-
                 val baseSmoothing = 0.15f
                 val smoothingFactor = (baseSmoothing * settingsState.fingerSensitivity).coerceIn(0.05f, 0.35f)
                 fingerPos = Offset(
@@ -189,11 +186,7 @@ fun CardboardDualEyeVrLayout(activity: Activity?) {
         }
     }
 
-<<<<<<< HEAD
     // Initialize MediaPipe HandLandmarker safely with RunningMode.VIDEO for high performance
-=======
-    // Initialize MediaPipe HandLandmarker safely with RunningMode.VIDEO for temporal stability & high precision
->>>>>>> 1c0854a6f40f900cc8dc99cb81be1dc8c15584e9
     val handLandmarker = remember {
         try {
             val baseOptions = BaseOptions.builder()
@@ -232,10 +225,23 @@ fun CardboardDualEyeVrLayout(activity: Activity?) {
 
         cameraProviderFuture.addListener({
             val cameraProvider = cameraProviderFuture.get()
-            val imageAnalysis = ImageAnalysis.Builder()
+            val imageAnalysisBuilder = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
-                .build()
+
+            val camera2Extender = androidx.camera.camera2.interop.Camera2Interop.Extender(imageAnalysisBuilder)
+            // Lock focus to fixed mode & distance to prevent auto-focus hunting and brightness shifts
+            camera2Extender.setCaptureRequestOption(
+                android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE,
+                android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_OFF
+            )
+            // Set fixed focal distance (2.5f diopters = ~40cm distance, ideal for reading screens and books)
+            camera2Extender.setCaptureRequestOption(
+                android.hardware.camera2.CaptureRequest.LENS_FOCUS_DISTANCE,
+                2.5f
+            )
+
+            val imageAnalysis = imageAnalysisBuilder.build()
 
             imageAnalysis.setAnalyzer(executor) { imageProxy ->
                 val rotation = imageProxy.imageInfo.rotationDegrees
@@ -263,17 +269,6 @@ fun CardboardDualEyeVrLayout(activity: Activity?) {
                             val mpImage = BitmapImageBuilder(rotatedBitmap).build()
                             val result = handLandmarker.detectForVideo(mpImage, timestamp)
                             if (result.landmarks().isNotEmpty()) {
-<<<<<<< HEAD
-                                val indexTip = result.landmarks()[0][8] // Index finger tip
-                                val rawX = indexTip.x()
-                                val rawY = indexTip.y()
-                                // Apply EMA low-pass filter on target position to eliminate jitter
-                                targetFingerPos = Offset(
-                                    targetFingerPos.x + 0.4f * (rawX - targetFingerPos.x),
-                                    targetFingerPos.y + 0.4f * (rawY - targetFingerPos.y)
-                                )
-                                lastDetectionTime = System.currentTimeMillis()
-=======
                                 val landmarks = result.landmarks()[0]
                                 val pointingFingerIndex = identifyPointingFinger(landmarks)
 
@@ -290,8 +285,11 @@ fun CardboardDualEyeVrLayout(activity: Activity?) {
                                     val maxJumpThreshold = 0.35f
 
                                     if (!isFingerDetected || distance < maxJumpThreshold) {
-                                        targetFingerPos = Offset(rawX, rawY)
-                                        isFingerDetected = true
+                                        val newTarget = Offset(rawX, rawY)
+                                        executor.execute {
+                                            targetFingerPos = newTarget
+                                            isFingerDetected = true
+                                        }
                                     }
 
                                     // High-specificity OCR word identification using Region of Interest (ROI) cropping with vertical/horizontal precision weighting
@@ -351,20 +349,22 @@ fun CardboardDualEyeVrLayout(activity: Activity?) {
                                                         }
                                                     }
                                                     val detectedWord = bestWord?.trim()
-                                                    if (detectedWord != null && detectedWord.length >= 2) {
-                                                        if (detectedWord == candidateWord) {
-                                                            candidateStreak++
-                                                            if (candidateStreak >= 2) {
-                                                                identifiedWord = detectedWord
+                                                    executor.execute {
+                                                        if (detectedWord != null && detectedWord.length >= 2) {
+                                                            if (detectedWord == candidateWord) {
+                                                                candidateStreak++
+                                                                if (candidateStreak >= 2) {
+                                                                    identifiedWord = detectedWord
+                                                                }
+                                                            } else {
+                                                                candidateWord = detectedWord
+                                                                candidateStreak = 1
                                                             }
                                                         } else {
-                                                            candidateWord = detectedWord
-                                                            candidateStreak = 1
+                                                            candidateWord = null
+                                                            candidateStreak = 0
+                                                            identifiedWord = null
                                                         }
-                                                    } else {
-                                                        candidateWord = null
-                                                        candidateStreak = 0
-                                                        identifiedWord = null
                                                     }
 
                                                     if (!croppedBitmap.isRecycled) {
@@ -379,23 +379,26 @@ fun CardboardDualEyeVrLayout(activity: Activity?) {
                                         }
                                     }
                                 } else {
+                                    executor.execute {
+                                        missingFramesCount++
+                                        if (missingFramesCount > 8) { // ~250ms grace period to eliminate flashing
+                                            isFingerDetected = false
+                                            identifiedWord = null
+                                            candidateWord = null
+                                            candidateStreak = 0
+                                        }
+                                    }
+                                }
+                            } else {
+                                executor.execute {
                                     missingFramesCount++
-                                    if (missingFramesCount > 8) { // ~250ms grace period to eliminate flashing
+                                    if (missingFramesCount > 8) {
                                         isFingerDetected = false
                                         identifiedWord = null
                                         candidateWord = null
                                         candidateStreak = 0
                                     }
                                 }
-                            } else {
-                                missingFramesCount++
-                                if (missingFramesCount > 8) {
-                                    isFingerDetected = false
-                                    identifiedWord = null
-                                    candidateWord = null
-                                    candidateStreak = 0
-                                }
->>>>>>> 1c0854a6f40f900cc8dc99cb81be1dc8c15584e9
                             }
                         } catch (e: Exception) {
                             e.printStackTrace()
@@ -451,11 +454,8 @@ fun CardboardDualEyeVrLayout(activity: Activity?) {
                     horizontalOffsetDp = settingsState.ipdOffsetDp.dp,
                     fingerPos = fingerPos,
                     isFingerDetected = isFingerDetected,
-<<<<<<< HEAD
                     textScale = settingsState.textScale
-=======
                     identifiedWord = identifiedWord
->>>>>>> 1c0854a6f40f900cc8dc99cb81be1dc8c15584e9
                 )
             }
 
@@ -476,11 +476,8 @@ fun CardboardDualEyeVrLayout(activity: Activity?) {
                     horizontalOffsetDp = (-settingsState.ipdOffsetDp).dp,
                     fingerPos = fingerPos,
                     isFingerDetected = isFingerDetected,
-<<<<<<< HEAD
                     textScale = settingsState.textScale
-=======
                     identifiedWord = identifiedWord
->>>>>>> 1c0854a6f40f900cc8dc99cb81be1dc8c15584e9
                 )
             }
         }
@@ -489,30 +486,13 @@ fun CardboardDualEyeVrLayout(activity: Activity?) {
         SettingsIconButton(
             onClick = { is2DSettingsOpen = true },
             modifier = Modifier
-<<<<<<< HEAD
                 .align(Alignment.TopEnd)
                 .padding(top = 16.dp, end = 16.dp)
-=======
-                .align(Alignment.TopCenter)
-                .padding(top = 8.dp)
-                .background(Color.Black.copy(alpha = 0.7f), shape = RoundedCornerShape(20.dp))
-                .padding(horizontal = 12.dp, vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Button(onClick = { if (ipdOffsetDp > 0) ipdOffsetDp -= 4f }, shape = CircleShape) {
-                Text(text = "IPD -", fontSize = 11.sp)
-            }
-            Text(text = "IPD Shift: ${ipdOffsetDp.toInt()}dp", color = Color.White, fontSize = 11.sp)
-            Button(onClick = { ipdOffsetDp += 4f }, shape = CircleShape) {
-                Text(text = "IPD +", fontSize = 11.sp)
-            }
-        }
 
         Surface(
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 52.dp),
+                .padding(top = 16.dp),
             color = if (identifiedWord != null) Color.Cyan.copy(alpha = 0.95f) else Color.DarkGray.copy(alpha = 0.85f),
             shape = RoundedCornerShape(16.dp)
         ) {
@@ -530,9 +510,7 @@ fun CardboardDualEyeVrLayout(activity: Activity?) {
             color = Color.Gray,
             fontSize = 10.sp,
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp)
->>>>>>> 1c0854a6f40f900cc8dc99cb81be1dc8c15584e9
         )
-
         // 2D Touchscreen Settings Dialog Sheet
         if (is2DSettingsOpen) {
             SettingsDialog(
@@ -551,11 +529,8 @@ fun VrLensViewport(
     horizontalOffsetDp: Dp,
     fingerPos: Offset,
     isFingerDetected: Boolean,
-<<<<<<< HEAD
     textScale: Float
-=======
     identifiedWord: String?
->>>>>>> 1c0854a6f40f900cc8dc99cb81be1dc8c15584e9
 ) {
     val vrLensShape = remember { RoundedCornerShape(36.dp) }
 
