@@ -4,7 +4,7 @@
 
 ## Project Overview
 
-Our project tackles the problem of dyslexic individuals struggling with the cognitive load of reading, where they often become mentally tired or frustrated while reading. We also wanted to provide a solution for neurological therapists by providing data of specific struggles/patterns their patient may have. Hence, allowing the therapist to have highly-targeted practice with their patients.
+Made for the natHacks 2026 event for the Standard Division under the topic of Healthcare and Accessibility. Our project tackles the problem of dyslexic individuals struggling with the cognitive load of reading, where they often become mentally tired or frustrated while reading. We also wanted to provide a solution for neurological therapists by providing data of specific struggles/patterns their patient may have. Hence, allowing the therapist to have highly-targeted practice with their patients. Here is a [presentation](https://docs.google.com/presentation/d/1pboTwElwYRLjrwfVI6u4OSQYpQCSas1VTP28yePDdrw/edit?slide=id.h69fbb7543530192b_13_396#slide=id.h69fbb7543530192b_13_396) made for this. Made by Zeke Elegino, William Bautista, Gerard Ventura, Denis Zhang. 
 
 ## Research and Approach
 
